@@ -58,6 +58,14 @@ GDT_Task2_SS3	db		0FFh,0,0,0,0,11110010b,01000000b,0
 GDT_Task2_SS0	db		0FFh,0,0,0,0,10010010b,01000000b,0
 ; 32-битный ограниченный сегмент локальной таблицы дескрипторов задачи 2
 GDT_Task2_LDT	db		0,0,0,0,0,11100010b,01000000b,0
+; 32-битный свободный TSS задачи 3 с лимитом 67h
+GDT_TSS3        db      67h,0,0,0,0,11101001b,01000000b,0
+; 32-битный ограниченный сегмент кода задачи 3
+GDT_Task3_CS    db      0,0,0,0,0,11111010b,01000000b,0
+; 32-битный ограниченный сегмент данных задачи 3
+GDT_Task3_DS    db      0FFh,0FFh,0,0,0,11110010b,01000000b,0
+; 32-битный ограниченный сегмент локальной таблицы дескрипторов задачи 3
+GDT_Task3_LDT   db      0,0,0,0,0,11100010b,01000000b,0
 
 gdt_size = $-GDT
 GDTr    dw      gdt_size-1      ; лимит GDT
@@ -72,6 +80,18 @@ db      8 dup(0)
 LDT2_DS	db		0,0,0,0,0,11110010b,01000000b,0
 ldt2_size = $-LDT2
 LDT2_Limit    	dw      ldt2_size-1      ; лимит LDT2
+
+; Таблица локальных дескрипторов задачи 3
+LDT3    LABEL   byte
+    ; нулевой дескриптор (обязательно должен быть на первом месте)
+    db      8 dup(0)
+    ; Дескриптор сегмента стека для привилегий 3
+    LDT3_SS3 db      0FFh, 0, 0, 0, 0, 11110010b, 01000000b, 0
+    ; Дескриптор сегмента стека для привилегий 0
+    LDT3_SS0 db      0FFh, 0, 0, 0, 0, 10010010b, 01000000b, 0
+
+    ldt3_size = $-LDT3
+LDT3_Limit      dw      ldt3_size - 1 ; лимит LDT3
 
 ; имена для селекторов (все селекторы для GDT, с RPL = 00)
 SEL_16bitCS     equ     0001000b
@@ -88,7 +108,13 @@ SEL_Task2_DS	equ		1011011b
 SEL_Task2_SS3	equ		1100011b
 SEL_Task2_SS0	equ		1101000b
 SEL_Task2_LDT	equ 	1110011b	; селектор локальной таблицы задачи 2 в глобальной таблице
+SEL_TSS3 		equ     1111011b
+SEL_Task3_CS	equ	   10000011b
+SEL_Task3_DS	equ	   10001011b
+SEL_Task3_LDT	equ    10010011b	; селектор локальной таблицы задачи 3 в глобальной таблице
 
+SEL_Task3_SS3	equ		01111b
+SEL_Task3_SS0	equ		10 100b
 SEL_LDT2_DS		equ		0001111b	; селектор сегмента данных задачи 2 в локальной таблице задачи 2
 
 
@@ -176,6 +202,36 @@ dw		0
 dw      0               ; слово флагов задачи
 dw      0               ; адрес таблицы ввода-вывода
 
+; сегмент TSS_3. Аналогично TSS_1:
+TSS_3   dw		0		; селектор TSS обратной связи (для вложенных задач)
+dw		0
+dd		Stack_3_PL0		; ESP для стека уровня привилегий 0
+dw		SEL_Task3_SS0	; SS для стека уровня привилегий 0 (должно быть RPL = 00)
+dw		0
+dd		0				; ESP для стека уровня привилегий 1
+dw		0				; SS для стека уровня привилегий 1 (должно быть RPL = 01)
+dw		0
+dd		0				; ESP для стека уровня привилегий 2
+dw		0				; SS для стека уровня привилегий 2 (должно быть RPL = 10)
+dw		0
+dd      0        		; CR3, адрес каталога таблиц страниц (при страничной адресации)
+dd      offset Task_3   ; EIP
+dd      0200h           ; EFLAGS (IF=1, DF=0)
+dd      05h*256    		; EAX
+dd      0,0,0           ; ECX, EDX, EBX
+dd      Stack_3_PL3     ; ESP для стека уровня привилегий сегмента кода задачи, в данном случае 3
+dd      0,0             ; EBP, ESI
+dd      LastPos_3      ; EDI (для вывода начального символа)
+dd      SEL_VideoBuf    ; ES
+dd      SEL_Task3_CS    ; CS
+dd      SEL_Task3_SS3   ; SS для стека уровня привилегий сегмента кода задачи, в данном случае 3
+dd      SEL_Task3_DS    ; DS
+dd      0,0             ; FS, GS
+dw      SEL_Task3_LDT   ; LDTR
+dw		0
+dw      0               ; слово флагов задачи
+dw      0               ; адрес таблицы ввода-вывода
+
 ; Счетчик (для планировщика)
 Counter dw      0
 ; [Селектор]:[Смещение] всех трех TSS для дальнего jmp'а (для планировщика)
@@ -187,6 +243,10 @@ dw      SEL_TSS1        ; селектор
 dw      ?
 Sel_2   dd      0       ; смещение
 dw      SEL_TSS2        ; селектор
+dw      ?
+Sel_3   dd      0       ; смещение
+dw      SEL_TSS3        ; селектор
+dw      ?
 
 ; Сообщение об исключении
 Exp_msg LABEL   byte
@@ -199,6 +259,7 @@ Emsg_size = $ - Exp_msg
 LastPos_0       =       027Eh
 LastPos_1       =       075Eh
 LastPos_2       =       0C7Eh
+LastPos_3       =       0D1Eh
 Delta   =       9Ch
 Symb_Col        EQU       0Ah
 Symb_Div        =       20h
@@ -439,7 +500,7 @@ mov     ds, ax                  ; селектор PM_data -> в ds
 xor     ebx, ebx
 mov     bx, Counter             ; читаем Counter,
 inc     ebx                     ; увеличиваем его на 1
-cmp     ebx, 3                  ; и проверяем: если он соотв-ет
+cmp     ebx, 4                  ; и проверяем: если он соотв-ет
 jnz     short @OK               ; задаче 2, то устанавливаем его
 xor     ebx, ebx                ; на задачу 0,
 @OK:    mov     Counter, bx     ; сохраняем Counter
@@ -530,6 +591,9 @@ Task2_DS SEGMENT PARA PUBLIC 'DATA' use32
 Task2_DS_Start LABEL byte
 
 MYVAR 	DB	5
+MYVAR2 	DW	6
+MYVAR3 	DW	7
+MYVAR4 	DW	8
 
 Task2_DS_Size  EQU $-Task2_DS_Start
 Task2_DS_Limit dw Task2_DS_Size - 1
@@ -594,8 +658,6 @@ Task2_CS_Limit dw Task2_CS_Size - 1
 
 Task2_CS ENDS
 
-
-
 ; 32-битный сегмент стека задачи 2 для уровня привилегий 3
 Task2_SS3 SEGMENT para stack 'STACK' use32
 
@@ -604,8 +666,6 @@ Stack_2_PL3 = $-Task2_SS3_End
 
 Task2_SS3 ENDS
 
-
-
 ; 32-битный сегмент стека задачи 2 для уровня привилегий 0
 Task2_SS0 SEGMENT para stack 'STACK' use32
 
@@ -613,6 +673,64 @@ Task2_SS0_End db		100h dup(?)     ; стек задачи 2 уровня при�
 Stack_2_PL0 = $-Task2_SS0_End
 
 Task2_SS0 ENDS
+
+
+; Сегмент данных задачи 3
+Task3_DS SEGMENT PARA PUBLIC 'DATA' use32
+
+Task3_DS_Start LABEL byte
+
+MYVAR2 	DB	'X'
+
+Task3_DS_Size  EQU $-Task3_DS_Start
+Task3_DS_Limit dw Task3_DS_Size - 1
+
+Task3_DS ENDS
+
+
+; Сегмент кода задачи 3
+Task3_CS SEGMENT PARA PUBLIC 'CODE' use32
+ASSUME CS:Task3_CS
+ASSUME DS:Task3_DS
+ASSUME SS:Task3_SS3
+
+Task3_CS_Start LABEL byte
+; Задача 3
+Task_3:
+mov 	bx, SEL_Task3_DS
+mov		fs, bx
+
+xor     al, al
+sub     edi, 2
+stosw
+cmp     edi, LastPos_3
+jnz     short @3
+sub     edi, Delta
+
+@3: mov al, fs:[MYVAR2] ;Symb_Code access using LDT
+stosw
+
+; небольшая пауза, зависящая от скорости процессора
+mov     ecx, Pause
+;mov     ecx, 700000h
+loop    $
+jmp     short Task_3
+Task3_CS_Size  EQU $-Task3_CS_Start
+Task3_CS_Limit dw Task3_CS_Size - 1
+
+Task3_CS ENDS
+
+; 32-битный сегмент стека задачи 2 для уровня привилегий 3
+Task3_SS3 SEGMENT para stack 'STACK' use32
+    Task3_SS3_End dw      	100h dup(?)     ; стек задачи 2 уровня привилегий 3
+    Stack_3_PL3 = $-Task3_SS3_End
+Task3_SS3 ENDS
+
+; 32-битный сегмент стека задачи 3 для уровня привилегий 0
+Task3_SS0 SEGMENT para stack 'STACK' use32
+    Task3_SS0_End dw		100h dup(?)     ; стек задачи 3 уровня привилегий 0
+    Stack_3_PL0 = $-Task3_SS0_End
+Task3_SS0 ENDS
 
 
 
@@ -860,6 +978,69 @@ shl		eax, 4
 mov		word ptr ds:[LDT2_DS+2], ax
 shr		eax, 16
 mov		byte ptr ds:[LDT2_DS+4], al
+; TSS задачи 3
+pop     eax
+push    eax
+add     eax, offset TSS_3
+mov     word ptr GDT_TSS3+2, ax
+shr     eax, 16
+mov     byte ptr GDT_TSS3+4, al
+; DS задачи 3
+mov		ax, Task3_DS
+mov		es, ax
+mov		ax, es:[Task3_DS_Limit]
+mov		word ptr ds:[GDT_Task3_DS], ax
+mov 	eax, 0
+mov		ax, Task3_DS
+shl		eax, 4
+mov		word ptr ds:[GDT_Task3_DS+2], ax
+shr		eax, 16
+mov		byte ptr ds:[GDT_Task3_DS+4], al
+; CS задачи 3
+mov		ax, Task3_CS
+mov		es, ax
+mov		ax, es:[Task3_CS_Limit]
+mov		word ptr ds:[GDT_Task3_CS], ax
+mov		eax, 0
+mov		ax, Task3_CS
+shl		eax, 4
+mov		word ptr ds:[GDT_Task3_CS+2], ax
+shr		eax, 16
+mov		byte ptr ds:[GDT_Task3_CS+4], al
+; LDT задачи 3
+mov		ax, ds:[LDT3_Limit]
+mov		word ptr ds:[GDT_Task3_LDT], ax
+pop     eax
+push    eax
+add		eax, offset LDT3
+mov		word ptr ds:[GDT_Task3_LDT+2], ax
+shr		eax, 16
+mov		byte ptr ds:[GDT_Task3_LDT+4], al
+
+; Настройка базы и лимита для стека привилегий 3 (LDT3_SS3)
+mov     ax, Task3_SS3              ; Загрузка сегмента стека привилегий 3
+mov     es, ax
+mov     ax, es:[Task3_SS3_End]     ; Получение лимита сегмента
+mov     word ptr LDT3_SS3, ax      ; Установка лимита
+mov     eax, 0
+mov     ax, Task3_SS3              ; База стека
+shl     eax, 4                     ; Преобразование в линейный адрес
+mov     word ptr LDT3_SS3+2, ax    ; Младшие 16 бит базы
+shr     eax, 16
+mov     byte ptr LDT3_SS3+4, al    ; Старшие 8 бит базы
+
+; Настройка базы и лимита для стека привилегий 0 (LDT3_SS0)
+mov     ax, Task3_SS0              ; Загрузка сегмента стека привилегий 0
+mov     es, ax
+mov     ax, es:[Task3_SS0_End]     ; Получение лимита сегмента
+mov     word ptr LDT3_SS0, ax      ; Установка лимита
+mov     eax, 0
+mov     ax, Task3_SS0              ; База стека
+shl     eax, 4                     ; Преобразование в линейный адрес
+mov     word ptr LDT3_SS0+2, ax    ; Младшие 16 бит базы
+shr     eax, 16
+mov     byte ptr LDT3_SS0+4, al    ; Старшие 8 бит базы
+
 ; вычислить линейный адрес GDT
 pop     eax     ; EAX - линейный адрес PM_data
 push    eax
